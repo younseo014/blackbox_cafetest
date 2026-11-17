@@ -58,6 +58,7 @@
     },
     "files": [
       "main.mjs",
+      "preload.cjs",
       "dist-desktop/**/*",
       "package.json"
     ],

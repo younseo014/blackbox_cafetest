@@ -8,8 +8,17 @@ import {
 } from "./care-metrics";
 
 const DB_NAME = "memory-guard-care-v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const LOG_STORE = "daily_logs";
+const CHECKIN_STORE = "closing_checkins";
+
+export type ClosingCheckin = {
+  date: string;
+  fatigueScore: number | null;
+  crowdScore: number | null;
+  skipped: boolean;
+  recordedAt: number;
+};
 
 function requestResult<T>(request: IDBRequest<T>) {
   return new Promise<T>((resolve, reject) => {
@@ -33,6 +42,9 @@ function openCareDatabase() {
       const database = request.result;
       if (!database.objectStoreNames.contains(LOG_STORE)) {
         database.createObjectStore(LOG_STORE, { keyPath: "date" });
+      }
+      if (!database.objectStoreNames.contains(CHECKIN_STORE)) {
+        database.createObjectStore(CHECKIN_STORE, { keyPath: "date" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -118,6 +130,54 @@ export async function listRecentLogs(days = 28): Promise<DailyLog[]> {
 
 export async function deleteAllCareLogs(): Promise<void> {
   await requestResult(indexedDB.deleteDatabase(DB_NAME));
+}
+
+export async function getClosingCheckin(date = todayDateKey()): Promise<ClosingCheckin | null> {
+  const database = await openCareDatabase();
+  try {
+    const transaction = database.transaction(CHECKIN_STORE, "readonly");
+    const result = await requestResult<ClosingCheckin | undefined>(transaction.objectStore(CHECKIN_STORE).get(date));
+    await transactionDone(transaction);
+    return result ?? null;
+  } finally {
+    database.close();
+  }
+}
+
+export async function listClosingCheckins(): Promise<ClosingCheckin[]> {
+  const database = await openCareDatabase();
+  try {
+    const transaction = database.transaction(CHECKIN_STORE, "readonly");
+    const result = await requestResult<ClosingCheckin[]>(transaction.objectStore(CHECKIN_STORE).getAll());
+    await transactionDone(transaction);
+    return result.sort((a, b) => b.date.localeCompare(a.date));
+  } finally {
+    database.close();
+  }
+}
+
+export async function saveClosingCheckin(fatigueScore: number | null, crowdScore: number | null): Promise<ClosingCheckin> {
+  const skipped = fatigueScore === null && crowdScore === null;
+  const validScore = (score: number | null) => Number.isInteger(score) && score !== null && score >= 0 && score <= 10;
+  if (!skipped && (!validScore(fatigueScore) || !validScore(crowdScore))) {
+    throw new RangeError("피로도와 매장 혼잡도를 각각 0~10점으로 선택해 주세요.");
+  }
+  const checkin: ClosingCheckin = {
+    date: todayDateKey(),
+    fatigueScore,
+    crowdScore,
+    skipped,
+    recordedAt: Date.now(),
+  };
+  const database = await openCareDatabase();
+  try {
+    const transaction = database.transaction(CHECKIN_STORE, "readwrite");
+    transaction.objectStore(CHECKIN_STORE).put(checkin);
+    await transactionDone(transaction);
+    return checkin;
+  } finally {
+    database.close();
+  }
 }
 
 // --- Consent -----------------------------------------------------------

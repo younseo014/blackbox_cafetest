@@ -4,6 +4,7 @@ import { FormEvent, ReactNode, useEffect, useLayoutEffect, useRef, useState } fr
 import { Toaster, toast } from "sonner";
 import NumberFlow from "@number-flow/react";
 import { Dialog } from "@base-ui-components/react/dialog";
+import { ScoreWheel } from "./score-wheel";
 import type {
   HandLandmarker,
   NormalizedLandmark,
@@ -56,6 +57,10 @@ import {
   clearConsent,
   getConsent,
   listRecentLogs,
+  getClosingCheckin,
+  listClosingCheckins,
+  saveClosingCheckin,
+  type ClosingCheckin,
   recordDoubleCheck,
   recordMicroDelay,
   recordTaskCompleted,
@@ -735,7 +740,14 @@ export default function Home() {
   const [consent, setConsentState] = useState<ConsentState>(() => getConsent());
   const [showConsentModal, setShowConsentModal] = useState(false);
   const [careLogs, setCareLogs] = useState<DailyLog[]>([]);
+  const [closingCheckins, setClosingCheckins] = useState<ClosingCheckin[]>([]);
   const [myDataOpen, setMyDataOpen] = useState(false);
+  const [closingCheckinOpen, setClosingCheckinOpen] = useState(false);
+  const [closingCheckinPurpose, setClosingCheckinPurpose] = useState<"app" | "capture">("app");
+  const [closingFatigue, setClosingFatigue] = useState(5);
+  const [closingCrowd, setClosingCrowd] = useState(5);
+  const [closingBusy, setClosingBusy] = useState(false);
+  const [closingError, setClosingError] = useState("");
   const [storedMotionBytes, setStoredMotionBytes] = useState(0);
   const [motionSignal, setMotionSignal] = useState<{
     variability: number | null;
@@ -756,10 +768,31 @@ export default function Home() {
   const observationRunContextRef = useRef<{ sessionId: string; profile: ObservationProfile; workContext: WorkContextConfig; baseline: typeof observationBaseline } | null>(null);
   const [cameraSessionPurpose, setCameraSessionPurpose] = useState<"multi_camera" | "self_test" | null>(null);
 
+  useEffect(() => window.cafeDesktop?.onCloseRequested(() => {
+    setClosingError("");
+    setClosingCheckinPurpose("app");
+    setClosingCheckinOpen(true);
+    void getClosingCheckin().then((existing) => {
+      setClosingFatigue(existing?.fatigueScore ?? 5);
+      setClosingCrowd(existing?.crowdScore ?? 5);
+    }).catch(() => undefined);
+  }), []);
+
+  function openCaptureCheckin() {
+    setClosingError("");
+    setClosingCheckinPurpose("capture");
+    setClosingCheckinOpen(true);
+    void getClosingCheckin().then((existing) => {
+      setClosingFatigue(existing?.fatigueScore ?? 5);
+      setClosingCrowd(existing?.crowdScore ?? 5);
+    }).catch(() => undefined);
+  }
+
   async function refreshCareData() {
     try {
-      const logs = await listRecentLogs(28);
+      const [logs, checkins] = await Promise.all([listRecentLogs(28), listClosingCheckins()]);
       setCareLogs(logs);
+      setClosingCheckins(checkins);
     } catch {
       // local-only storage; ignore transient read errors
     }
@@ -1071,9 +1104,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    listRecentLogs(28)
-      .then((logs) => {
+    Promise.all([listRecentLogs(28), listClosingCheckins()])
+      .then(([logs, checkins]) => {
         setCareLogs(logs);
+        setClosingCheckins(checkins);
       })
       .catch(() => undefined);
   }, []);
@@ -1397,7 +1431,7 @@ export default function Home() {
       const stream = await openCameraDevice(preferredPrimary.deviceId, false, singleCameraOnly);
 
       let secondaryStream: MediaStream | null = null;
-      let tertiaryStream: MediaStream | null = null;
+      const tertiaryStream: MediaStream | null = null;
       if (preferredSecondary) {
         try {
           secondaryStream = await openCameraDevice(preferredSecondary.deviceId);
@@ -3423,6 +3457,7 @@ export default function Home() {
     setReplaySessionId(null);
     setMotionSignal(null);
     setCareLogs([]);
+    setClosingCheckins([]);
     setLearnedMotions([]);
     setObservationLearnedMotions([]);
     setSelfTestTrials([]);
@@ -3952,6 +3987,39 @@ export default function Home() {
     toast.success("초기 설정을 마쳤어요. 새로운 사용자 기준으로 학습을 시작합니다.");
   }
 
+  async function finishClosingCheckin(skip: boolean) {
+    if (closingBusy) return;
+    const fatigue = closingFatigue;
+    const crowd = closingCrowd;
+    if (!skip && (!Number.isInteger(fatigue) || !Number.isInteger(crowd) || fatigue < 0 || fatigue > 10 || crowd < 0 || crowd > 10)) {
+      setClosingError("피로도와 매장 혼잡도를 각각 0~10점으로 선택해 주세요.");
+      return;
+    }
+    setClosingBusy(true);
+    setClosingError("");
+    try {
+      if (cameraStatus === "connected" || cameraStatus === "requesting" || poseSessionRef.current) {
+        await stopCamera({ notify: false });
+      }
+      if (poseSessionRef.current || secondaryPoseSessionRef.current || tertiaryPoseSessionRef.current || streamRef.current || secondaryStreamRef.current || tertiaryStreamRef.current) {
+        throw new Error("카메라 기록을 저장하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요.");
+      }
+      await saveClosingCheckin(skip ? null : fatigue, skip ? null : crowd);
+      await refreshCareData();
+      if (closingCheckinPurpose === "app") {
+        window.cafeDesktop?.completeClose();
+      } else {
+        setClosingCheckinOpen(false);
+        setMultiCameraModalOpen(false);
+        setClosingBusy(false);
+        toast.success(skip ? "촬영을 마치고 자가진단은 건너뛰었어요." : "오늘의 자가진단을 저장하고 촬영을 마쳤어요.");
+      }
+    } catch (error) {
+      setClosingError(error instanceof Error ? error.message : "자가진단을 저장하지 못했습니다. 다시 시도해 주세요.");
+      setClosingBusy(false);
+    }
+  }
+
   return (
     <main className={`app-shell interface-${interfaceMode}${view === "onboarding" ? " onboarding-active" : ""}`}>
       <video
@@ -4037,7 +4105,7 @@ export default function Home() {
               <button
                 type="button"
                 className={`camera-pill ${cameraStatus}`}
-                onClick={() => cameraStatus === "connected" ? void stopCamera() : requestCameraStart()}
+                onClick={() => cameraStatus === "connected" ? openCaptureCheckin() : requestCameraStart()}
                 disabled={cameraStatus === "requesting"}
                 aria-label={cameraStatus === "connected" ? "카메라 연결 끄기" : "카메라 연결하기"}
               >
@@ -4091,9 +4159,10 @@ export default function Home() {
                 <small>{cameraStatus === "connected" ? `${poseStatusLabel} · ${poseStats.frames.toLocaleString()}프레임 기록 중` : `카메라 대기 · 저장된 세션 ${sessionCount}개`}</small>
               </div>
               <div className="owner-capture-actions">
-                <button type="button" className="primary-button" onClick={() => cameraStatus === "connected" ? void stopCamera() : requestCameraStart()} disabled={cameraStatus === "requesting"}>
-                  {cameraStatus === "connected" ? "촬영 마치고 자동 라벨링" : "카메라 연결"}
+                <button type="button" className="primary-button" onClick={requestCameraStart} disabled={cameraStatus !== "idle" && cameraStatus !== "error"}>
+                  카메라 연결
                 </button>
+                <button type="button" className="secondary-button" onClick={openCaptureCheckin} disabled={closingBusy}>촬영 종료</button>
                 <button type="button" className="secondary-button" onClick={() => void exportPoseData()} disabled={sessionCount === 0 && poseStats.frames === 0}>스켈레톤 데이터 내보내기</button>
               </div>
             </section>
@@ -5147,7 +5216,7 @@ export default function Home() {
 
         <div className="multi-camera-modal-actions">
           {cameraStatus === "connected" && (
-            <button className="camera-stop-button" type="button" onClick={() => void stopCamera().then(() => setMultiCameraModalOpen(false))}>카메라 끄기</button>
+            <button className="camera-stop-button" type="button" onClick={() => { setMultiCameraModalOpen(false); openCaptureCheckin(); }}>촬영 종료</button>
           )}
           <button className="modal-confirm-button" type="button" onClick={() => setMultiCameraModalOpen(false)}>확인 완료</button>
         </div>
@@ -5264,6 +5333,22 @@ export default function Home() {
         </form>
       </Modal>
 
+      <Modal open={closingCheckinOpen} onClose={() => !closingBusy && setClosingCheckinOpen(false)} labelledBy="closing-checkin-title" className="closing-checkin-modal" disableDismiss={closingBusy}>
+        <span className="section-kicker">하루 마무리</span>
+        <h2 id="closing-checkin-title">{closingCheckinPurpose === "capture" ? "촬영 종료 전 자가진단" : "프로그램 종료 전 자가진단"}</h2>
+        <p className="closing-checkin-intro">오늘의 상태를 직접 점수로 남겨 주세요. 답하기 번거로운 날은 건너뛰어도 됩니다.</p>
+        <div className="closing-checkin-fields">
+          <ScoreWheel id="closing-fatigue" label="오늘의 본인 피로도" hint="0 편안함 · 10 매우 피곤함" value={closingFatigue} onChange={setClosingFatigue} disabled={closingBusy} />
+          <ScoreWheel id="closing-crowd" label="오늘의 매장 혼잡도" hint="0 한산함 · 10 매우 혼잡함" value={closingCrowd} onChange={setClosingCrowd} disabled={closingBusy} />
+        </div>
+        {closingError && <p className="closing-checkin-error" role="alert">{closingError}</p>}
+        <div className="closing-checkin-actions">
+          <button type="button" className="primary-button" onClick={() => void finishClosingCheckin(false)} disabled={closingBusy}>{closingCheckinPurpose === "capture" ? "저장하고 촬영 종료" : "저장하고 종료"}</button>
+          <button type="button" className="secondary-button" onClick={() => void finishClosingCheckin(true)} disabled={closingBusy}>오늘은 패스할래요</button>
+          <button type="button" className="closing-checkin-cancel" onClick={() => setClosingCheckinOpen(false)} disabled={closingBusy}>{closingCheckinPurpose === "capture" ? "촬영 계속하기" : "계속 사용하기"}</button>
+        </div>
+      </Modal>
+
       <Modal open={showConsentModal} onClose={() => { }} disableDismiss labelledBy="consent-title" className="consent-modal">
         <span className="section-kicker">카메라를 켜기 전에 알려드려요</span>
         <h2 id="consent-title">이 카메라는 두 가지 목적으로 쓰일 수 있어요</h2>
@@ -5326,6 +5411,10 @@ export default function Home() {
             <strong>{careLogs.length}일치</strong>
           </article>
           <article>
+            <span>마감 자가진단</span>
+            <strong>{closingCheckins.length}일치</strong>
+          </article>
+          <article>
             <span>저장된 동작 좌표</span>
             <strong>{formatBytes(storedMotionBytes)} 사용 중</strong>
           </article>
@@ -5340,6 +5429,20 @@ export default function Home() {
             </strong>
           </article>
         </div>
+
+        {closingCheckins.length > 0 && (
+          <div className="closing-checkin-history">
+            <strong>최근 마감 자가진단</strong>
+            <ul>
+              {closingCheckins.slice(0, 7).map((checkin) => (
+                <li key={checkin.date}>
+                  <span>{checkin.date}</span>
+                  <span>{checkin.skipped ? "건너뜀" : `피로도 ${checkin.fatigueScore}점 · 혼잡도 ${checkin.crowdScore}점`}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <p className="my-data-note">
           얼굴·영상·음성은 저장되지 않으며, 모든 데이터는 이 브라우저

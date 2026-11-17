@@ -2190,3 +2190,37 @@ input, select {
 .owner-capture-actions { display: grid; gap: 8px; min-width: 205px; }
 .owner-capture-actions button { min-height: 42px; }
 @media (max-width: 600px) { .owner-capture-actions { width: 100%; } }
+
+.closing-checkin-modal { position: relative; width: min(100%, 520px); max-height: calc(100dvh - 24px); padding: 28px 24px; border: 1px solid var(--divider-color); border-radius: 20px; overflow-y: auto; background: white; box-shadow: 0 18px 55px rgba(23, 16, 34, .2); }
+.closing-checkin-modal h2 { margin: 8px 0; font-size: 21px; }
+.closing-checkin-intro { margin: 0 0 16px; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+.closing-checkin-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.score-wheel-field { min-width: 0; padding: 12px; border: 1px solid var(--divider-color); border-radius: 14px; background: #fbfcfe; }
+.score-wheel-heading { display: grid; gap: 3px; min-height: 44px; }
+.score-wheel-heading strong { color: var(--ink); font-size: 14px; }
+.score-wheel-heading span { color: var(--text-muted); font-size: 10.5px; line-height: 1.35; }
+.score-wheel-arrow { width: 100%; height: 30px; margin-top: 5px; display: grid; place-items: center; border: 1px solid #cbdce8; border-radius: 9px; background: #f3f9fd; color: #226184; cursor: pointer; }
+.score-wheel-arrow svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.score-wheel-arrow:disabled { opacity: .4; cursor: not-allowed; }
+.score-wheel-arrow:focus-visible { outline: 2px solid var(--sky-ink); outline-offset: 2px; }
+.score-wheel-frame { position: relative; height: 156px; margin-top: 5px; overflow: hidden; border-radius: 12px; background: #f2f6f9; }
+.score-wheel-frame::before, .score-wheel-frame::after { position: absolute; z-index: 2; right: 0; left: 0; height: 34px; pointer-events: none; content: ""; }
+.score-wheel-frame::before { top: 0; background: linear-gradient(#f2f6f9, transparent); }
+.score-wheel-frame::after { bottom: 0; background: linear-gradient(transparent, #f2f6f9); }
+.score-wheel-focus { position: absolute; z-index: 0; top: 52px; right: 6px; left: 6px; height: 52px; border: 1px solid #8cc6e9; border-radius: 10px; background: #dff1fc; pointer-events: none; }
+.score-wheel-scroll { position: relative; z-index: 1; height: 156px; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; scrollbar-width: none; padding-block: 52px; outline-offset: -3px; cursor: grab; touch-action: pan-y; }
+.score-wheel-scroll:active { cursor: grabbing; }
+.score-wheel-scroll::-webkit-scrollbar { display: none; }
+.score-wheel-scroll:focus-visible { outline: 2px solid var(--sky-ink); border-radius: 12px; }
+.score-wheel-item { height: 52px; display: flex; align-items: center; justify-content: center; gap: 3px; scroll-snap-align: center; color: #738391; font-size: 22px; font-variant-numeric: tabular-nums; cursor: pointer; user-select: none; }
+.score-wheel-item.selected { color: #164d6c; font-size: 30px; font-weight: 750; }
+.score-wheel-item small { font-size: 12px; font-weight: 650; }
+.score-wheel-guide { display: block; margin-top: 8px; color: var(--text-muted); font-size: 10px; text-align: center; }
+.closing-checkin-error { color: var(--danger); font-size: 12px; line-height: 1.5; }
+.closing-checkin-actions { display: grid; gap: 8px; margin-top: 22px; }
+.closing-checkin-actions button { min-height: 46px; }
+.closing-checkin-cancel { border: 0; background: transparent; color: var(--text-muted); font-size: 12px; }
+.closing-checkin-history { margin-top: 18px; font-size: 12px; }
+.closing-checkin-history ul { margin: 8px 0 0; padding: 0; list-style: none; }
+.closing-checkin-history li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--divider-color); color: var(--text-muted); }
+@media (max-width: 370px) { .closing-checkin-modal { padding-inline: 16px; } .closing-checkin-fields { gap: 8px; } .score-wheel-field { padding: 8px; } }

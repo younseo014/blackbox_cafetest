@@ -1,4 +1,4 @@
-import { app, BrowserWindow, net, protocol, session, shell } from "electron";
+import { app, BrowserWindow, ipcMain, net, protocol, session, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const APP_ORIGIN = "memoryguardcafe://app";
+let quitApproved = false;
+let mainWindow = null;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -69,11 +71,22 @@ function createWindow() {
     title: "메모리 가드",
     autoHideMenuBar: true,
     webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   });
+  mainWindow = window;
+
+  window.on("close", (event) => {
+    if (quitApproved) return;
+    event.preventDefault();
+    window.show();
+    window.focus();
+    window.webContents.send("closing-checkin:requested");
+  });
+  window.on("closed", () => { if (mainWindow === window) mainWindow = null; });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) {
@@ -88,11 +101,28 @@ function createWindow() {
 app.whenReady().then(async () => {
   await registerDesktopProtocol();
   configurePermissions();
+  ipcMain.on("closing-checkin:complete", (event) => {
+    if (event.sender !== mainWindow?.webContents || !event.sender.getURL().startsWith(`${APP_ORIGIN}/`)) return;
+    quitApproved = true;
+    app.quit();
+  });
+  ipcMain.on("closing-checkin:request", (event) => {
+    if (event.sender !== mainWindow?.webContents || !event.sender.getURL().startsWith(`${APP_ORIGIN}/`)) return;
+    mainWindow.close();
+  });
   createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on("before-quit", (event) => {
+  if (quitApproved || !mainWindow) return;
+  event.preventDefault();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send("closing-checkin:requested");
 });
 
 app.on("window-all-closed", () => {
