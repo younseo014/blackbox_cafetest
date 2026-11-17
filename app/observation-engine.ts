@@ -1,0 +1,498 @@
+import { parseSessionFrame, type BodyProportionProfile } from "./pose-store";
+import type { MovementCycle } from "./movement-units";
+import { hasInterruptionConfound, type InterruptionSummary } from "./work-interruptions";
+import { hasCompleteWorkBoundaries } from "./work-episode-segmentation";
+import { motionSamplesFromRawFrames } from "./motion-detection";
+import {
+  getOccupationTemplate,
+  type OccupationId,
+  type PrimitiveMotionLabel,
+  type TaskTemplate,
+  type WorkPhase,
+} from "./occupation-templates";
+export type ObservationMode = "learning" | "analysis";
+export type LearningDisposition = "accepted" | "quarantined" | "excluded" | "analysis_only";
+
+export type ZoneGrid = Array<string | null>;
+
+export type CustomZone = {
+  id: string;
+  label: string;
+  contextZoneId: string | null;
+};
+
+export type ObservationProfile = {
+  id: "primary";
+  occupation: OccupationId;
+  occupationName: string;
+  mode: ObservationMode;
+  learningStartedAt: number;
+  baselineVersion: number;
+  bodyProportionProfile?: BodyProportionProfile | null;
+  zoneGrid: ZoneGrid;
+  secondaryZoneGrid: ZoneGrid;
+  tertiaryZoneGrid: ZoneGrid;
+  customZones: CustomZone[];
+  updatedAt: number;
+};
+
+export type ObservationFeatures = {
+  durationSeconds: number;
+  activeRatio: number;
+  pauseCount: number;
+  longestPauseSeconds: number;
+  pathLength: number;
+  routeComplexity: number;
+  repetitionCount: number;
+  dominantZone: string | null;
+  zoneTransitions: number;
+};
+
+export type ObservationEpisode = {
+  id: string;
+  sessionId: string;
+  selfTestParticipant?: string;
+  selfTestProtocol?: string;
+  recognition?: {
+    version: string;
+    source: "personal_sequence" | "visual_context" | "insufficient";
+    proposerLabel?: string;
+    candidates: Array<{ label: string; distance: number; score: number }>;
+    weakHints: Array<{ label: string; score: number }>;
+    candidateMargin: number | null;
+    independentSupport: boolean;
+    learningApplied: boolean;
+  };
+  globalSessionId?: string;
+  multiViewEvidence?: {
+    cameraSlots: [1, 2] | [1, 2, 3];
+    synchronizedSampleCount: number;
+    maxSkewMs: number;
+    coordinateSpace: "two_normalized_image_views" | "three_normalized_image_views";
+    calibrated: false;
+  };
+  recordedAt: number;
+  date: string;
+  occupation: OccupationId;
+  mode: ObservationMode;
+  phase: WorkPhase;
+  taskType: string;
+  taskLabel: string;
+  taskConfidence: number;
+  primitiveLabels: PrimitiveMotionLabel[];
+  features: ObservationFeatures;
+  disposition: LearningDisposition;
+  dispositionReason: string;
+  durationZScore: number | null;
+  cycleDurationZScore?: number | null;
+  pauseZScore: number | null;
+  movementCycles?: MovementCycle[];
+  interruptions?: InterruptionSummary;
+  visualContext?: { model: "clip-vit-base-patch32-int8"; similarity: number; margin: number; sampleCount: number; label: string };
+  contextWeight: 0 | 1 | 2 | 3;
+  baselineVersion: number;
+  source?: "real_learning" | "real_analysis" | "self_test" | "self_test_training";
+  postureClassification?: {
+    label: "STAND" | "WALK" | "BEND_DOWN";
+    displayLabel: string;
+    confidence: number;
+    model: "epfl-posture-v1";
+  };
+  motionSlice?: {
+    boundaryEvidence?: import("./motion-segmentation").TargetMotionSlice["boundaryEvidence"];
+    startMs: number;
+    endMs: number;
+    durationSeconds: number;
+    originalDurationSeconds: number;
+    excludedFrameCount: number;
+    reason: string;
+  };
+};
+
+export type TaskBaseline = {
+  taskType: string;
+  taskLabel: string;
+  sampleCount: number;
+  meanDuration: number;
+  durationSD: number;
+  meanLongestPause: number;
+  pauseSD: number;
+  meanRouteComplexity: number;
+  cycleSampleCount?: number;
+  meanCycleDuration?: number;
+  cycleDurationSD?: number;
+  meanCycleRange?: number;
+  cycleHand?: MovementCycle["hand"];
+  cycleAxis?: MovementCycle["axis"];
+};
+
+export type BaselineSnapshot = {
+  version: number;
+  createdAt: number;
+  eligibleDays: number;
+  acceptedSamples: number;
+  confidence: number;
+  tasks: TaskBaseline[];
+};
+
+export type AnalysisFeedback = {
+  id: string;
+  eventId: string;
+  mode: ObservationMode;
+  verdict: "accurate" | "false_positive";
+  reason?: "interaction" | "rest" | "wrong_task" | "camera_error" | "other";
+  baselineVersion: number;
+  createdAt: number;
+};
+
+export const DEFAULT_PROFILE: ObservationProfile = {
+  id: "primary",
+  occupation: "cafe",
+  occupationName: "",
+  mode: "learning",
+  learningStartedAt: 0,
+  baselineVersion: 1,
+  bodyProportionProfile: null,
+  zoneGrid: Array(9).fill(null),
+  secondaryZoneGrid: Array(9).fill(null),
+  tertiaryZoneGrid: Array(9).fill(null),
+  customZones: [],
+  updatedAt: 0,
+};
+
+function average(values: number[]) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function standardDeviation(values: number[], mean: number) {
+  if (values.length < 2) return 0;
+  return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
+}
+
+export function safeZScore(value: number, mean: number, sd: number): number | null {
+  if (!Number.isFinite(value) || !Number.isFinite(mean) || sd < 0.05) return null;
+  return (value - mean) / sd;
+}
+
+export function buildBaseline(
+  episodes: ObservationEpisode[],
+  version = 1,
+): BaselineSnapshot {
+  const accepted = episodes.filter((episode) =>
+    episode.disposition === "accepted"
+    && !hasInterruptionConfound(episode.interruptions)
+    && (!episode.motionSlice?.boundaryEvidence || hasCompleteWorkBoundaries(episode.motionSlice))
+    && episode.source !== "self_test"
+    && episode.source !== "self_test_training",
+  );
+  const taskIds = [...new Set(accepted.map((episode) => episode.taskType))];
+  const tasks = taskIds.map((taskType) => {
+    const items = accepted.filter((episode) => episode.taskType === taskType);
+    const durations = items.map((episode) => episode.features.durationSeconds);
+    const pauses = items.map((episode) => episode.features.longestPauseSeconds);
+    const complexities = items.map((episode) => episode.features.routeComplexity);
+    const meanDuration = average(durations);
+    const meanLongestPause = average(pauses);
+    // One episode contributes one mean, regardless of how many cycles it contains.
+    const eligibleCycles = items
+      .map((episode) => episode.movementCycles ?? [])
+      .filter((cycles) => cycles.length >= 2);
+    const kindCounts = new Map<string, number>();
+    eligibleCycles.forEach((cycles) => {
+      const key = `${cycles[0].hand}:${cycles[0].axis}`;
+      kindCounts.set(key, (kindCounts.get(key) ?? 0) + 1);
+    });
+    const dominantKind = [...kindCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const comparableCycles = eligibleCycles.filter((cycles) => `${cycles[0].hand}:${cycles[0].axis}` === dominantKind);
+    const cycleDurations = comparableCycles
+      .map((cycles) => average(cycles.map((cycle) => cycle.durationSeconds)));
+    const meanCycleDuration = average(cycleDurations);
+    const cycleRanges = comparableCycles
+      .map((cycles) => average(cycles.map((cycle) => cycle.range)));
+    return {
+      taskType,
+      taskLabel: items[0]?.taskLabel ?? taskType,
+      sampleCount: items.length,
+      meanDuration,
+      durationSD: standardDeviation(durations, meanDuration),
+      meanLongestPause,
+      pauseSD: standardDeviation(pauses, meanLongestPause),
+      meanRouteComplexity: average(complexities),
+      cycleSampleCount: cycleDurations.length,
+      meanCycleDuration,
+      cycleDurationSD: standardDeviation(cycleDurations, meanCycleDuration),
+      meanCycleRange: average(cycleRanges),
+      cycleHand: comparableCycles[0]?.[0].hand,
+      cycleAxis: comparableCycles[0]?.[0].axis,
+    };
+  });
+  const eligibleDays = new Set(accepted.map((episode) => episode.date)).size;
+  const sampleProgress = Math.min(1, accepted.length / 20);
+  const dayProgress = Math.min(1, eligibleDays / 14);
+  return {
+    version,
+    createdAt: Date.now(),
+    eligibleDays,
+    acceptedSamples: accepted.length,
+    confidence: Math.round((sampleProgress * 0.55 + dayProgress * 0.45) * 100),
+    tasks,
+  };
+}
+
+/** Score the final work label, after context inference or manual review. */
+export function scoreLabeledEpisode(episode: ObservationEpisode, baseline: BaselineSnapshot): ObservationEpisode {
+  const uncertainBoundaries = Boolean(episode.motionSlice?.boundaryEvidence && !hasCompleteWorkBoundaries(episode.motionSlice));
+  if (hasInterruptionConfound(episode.interruptions) || uncertainBoundaries) {
+    return {
+      ...episode, durationZScore: null, pauseZScore: null, cycleDurationZScore: null,
+      ...(episode.mode === "learning" && episode.disposition === "accepted" ? {
+        disposition: "quarantined" as const,
+        dispositionReason: uncertainBoundaries ? "업무의 시작·완료 경계를 확인하지 못해 시간 비교와 기준선 학습을 보류했어요."
+          : "중단 의심 또는 좌표 누락이 포함되어 개인 기준선 학습을 보류했어요.",
+      } : {}),
+    };
+  }
+  const taskBaseline = baseline.tasks.find((item) => item.taskType === episode.taskType);
+  const cycles = episode.movementCycles ?? [];
+  const comparableRange = cycles.length >= 2
+    && cycles[0].hand === taskBaseline?.cycleHand && cycles[0].axis === taskBaseline?.cycleAxis
+    && (taskBaseline?.meanCycleRange ?? 0) > 0
+    && Math.abs(average(cycles.map((cycle) => cycle.range)) - taskBaseline!.meanCycleRange!)
+      / taskBaseline!.meanCycleRange! <= 0.25;
+  const cycleDurationZScore = comparableRange && (taskBaseline?.cycleSampleCount ?? 0) >= 3
+    ? safeZScore(
+      average(cycles.map((cycle) => cycle.durationSeconds)),
+      taskBaseline!.meanCycleDuration!,
+      taskBaseline!.cycleDurationSD!,
+    )
+    : null;
+  // Total time remains descriptive when repeated work has a usable per-cycle measure.
+  const durationZScore = cycles.length >= 2 || (taskBaseline?.cycleSampleCount ?? 0) >= 3
+    ? null
+    : taskBaseline
+      ? safeZScore(episode.features.durationSeconds, taskBaseline.meanDuration, taskBaseline.durationSD)
+      : null;
+  const pauseZScore = taskBaseline
+    ? safeZScore(episode.features.longestPauseSeconds, taskBaseline.meanLongestPause, taskBaseline.pauseSD)
+    : null;
+  const next = { ...episode, durationZScore, cycleDurationZScore, pauseZScore };
+  if (next.mode === "learning" && next.source !== "self_test_training"
+    && next.disposition !== "excluded" && next.disposition !== "quarantined"
+    && ((cycleDurationZScore ?? 0) >= 1.5 || (durationZScore ?? 0) >= 1.5 || (pauseZScore ?? 0) >= 1.5)) {
+    return {
+      ...next,
+      disposition: "quarantined",
+      dispositionReason: "평소 흐름으로 확정하기 어려워 기준선 학습에서 잠시 보류했어요.",
+    };
+  }
+  return next;
+}
+
+type FlatPoint = { x: number; y: number; z: number };
+
+function bodyCenter(frame: ReturnType<typeof parseSessionFrame>): { x: number; y: number } | null {
+  const body = frame.body;
+  const leftHip = 12;
+  const rightHip = 13;
+  if ((body[leftHip * 4 + 3] ?? 0) < 0.25 || (body[rightHip * 4 + 3] ?? 0) < 0.25) {
+    return null;
+  }
+  return {
+    x: (body[leftHip * 4] + body[rightHip * 4]) / 2,
+    y: (body[leftHip * 4 + 1] + body[rightHip * 4 + 1]) / 2,
+  };
+}
+
+function distance(a: FlatPoint, b: FlatPoint) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function gridIndex(point: { x: number; y: number }) {
+  const column = Math.min(2, Math.max(0, Math.floor(point.x * 3)));
+  const row = Math.min(2, Math.max(0, Math.floor(point.y * 3)));
+  return row * 3 + column;
+}
+
+export function extractObservationFeatures(
+  rawFrames: number[][],
+  zoneGrid: ZoneGrid,
+  zoneAliases: Record<string, string> = {},
+): ObservationFeatures {
+  if (rawFrames.length === 0) {
+    return {
+      durationSeconds: 0,
+      activeRatio: 0,
+      pauseCount: 0,
+      longestPauseSeconds: 0,
+      pathLength: 0,
+      routeComplexity: 0,
+      repetitionCount: 0,
+      dominantZone: null,
+      zoneTransitions: 0,
+    };
+  }
+  const frames = rawFrames.map(parseSessionFrame);
+  const points = motionSamplesFromRawFrames(rawFrames).map((sample) => sample.point);
+  const zoneTrail = frames.map((frame) => {
+    const center = bodyCenter(frame);
+    const zoneId = center ? zoneGrid[gridIndex(center)] ?? null : null;
+    return zoneId ? zoneAliases[zoneId] ?? zoneId : null;
+  });
+  let pathLength = 0;
+  let activeSteps = 0;
+  let pauseCount = 0;
+  let pauseStartedAt: number | null = null;
+  let longestPauseSeconds = 0;
+  let directionChanges = 0;
+  let previousDx: number | null = null;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    if (!previous || !current || frames[index].relativeTimeMs - frames[index - 1].relativeTimeMs > 1200) {
+      pauseStartedAt = null;
+      previousDx = null;
+      continue;
+    }
+    const dtSeconds = Math.max(0.001, (frames[index].relativeTimeMs - frames[index - 1].relativeTimeMs) / 1000);
+    const step = distance(previous, current);
+    pathLength += step;
+    const speed = step / dtSeconds;
+    if (speed >= 0.02) {
+      activeSteps += 1;
+      if (pauseStartedAt !== null) {
+        const duration = (frames[index].relativeTimeMs - pauseStartedAt) / 1000;
+        if (duration >= 1) pauseCount += 1;
+        longestPauseSeconds = Math.max(longestPauseSeconds, duration);
+        pauseStartedAt = null;
+      }
+    } else if (pauseStartedAt === null) {
+      pauseStartedAt = frames[index - 1].relativeTimeMs;
+    }
+    const dx = current.x - previous.x;
+    if (previousDx !== null && Math.abs(dx) > 0.002 && Math.sign(dx) !== Math.sign(previousDx)) {
+      directionChanges += 1;
+    }
+    if (Math.abs(dx) > 0.002) previousDx = dx;
+  }
+  if (pauseStartedAt !== null) {
+    longestPauseSeconds = Math.max(
+      longestPauseSeconds,
+      (frames[frames.length - 1].relativeTimeMs - pauseStartedAt) / 1000,
+    );
+  }
+  const compactTrail = zoneTrail.filter((zone, index) => zone && zone !== zoneTrail[index - 1]);
+  const counts = new Map<string, number>();
+  zoneTrail.forEach((zone) => {
+    if (zone) counts.set(zone, (counts.get(zone) ?? 0) + 1);
+  });
+  const dominantZone = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  return {
+    durationSeconds: Math.max(0, (frames[frames.length - 1].relativeTimeMs - frames[0].relativeTimeMs) / 1000),
+    activeRatio: points.length > 1 ? activeSteps / (points.length - 1) : 0,
+    pauseCount,
+    longestPauseSeconds,
+    pathLength,
+    routeComplexity: compactTrail.length + directionChanges / 3,
+    repetitionCount: Math.floor(directionChanges / 2),
+    dominantZone,
+    zoneTransitions: Math.max(0, compactTrail.length - 1),
+  };
+}
+
+export function inferTask(
+  occupation: OccupationId,
+  phase: WorkPhase,
+  features: ObservationFeatures,
+): { task: TaskTemplate; confidence: number; primitiveLabels: PrimitiveMotionLabel[] } {
+  const template = getOccupationTemplate(occupation);
+  const candidates = template.tasks.filter((candidate) => candidate.phase === phase);
+  const pool = candidates.length ? candidates : template.tasks.filter((candidate) => candidate.phase === "business");
+  const scored = pool.map((candidate) => {
+    let score = candidate.priority === 1 ? 0.15 : 0;
+    if (features.dominantZone && candidate.zones.includes(features.dominantZone)) score += 0.62;
+    if (features.pathLength > 0.5 && candidate.motions.includes("WALK")) score += 0.12;
+    if (features.repetitionCount >= 2 && candidate.motions.includes("REPETITIVE_ARM")) score += 0.12;
+    if (features.longestPauseSeconds >= 5 && candidate.motions.includes("STATIC_PAUSE")) score += 0.08;
+    return { candidate, score };
+  }).sort((a, b) => b.score - a.score);
+  const winner = scored[0] ?? { candidate: template.tasks[0], score: 0.2 };
+  const primitiveLabels = new Set<PrimitiveMotionLabel>();
+  if (features.pathLength > 0.4) primitiveLabels.add("WALK");
+  if (features.zoneTransitions > 0) primitiveLabels.add("ZONE_TRANSITION");
+  if (features.longestPauseSeconds >= 1) primitiveLabels.add("STATIC_PAUSE");
+  if (features.repetitionCount >= 2) primitiveLabels.add("REPETITIVE_ARM");
+  if (features.activeRatio < 0.15) primitiveLabels.add("STAND");
+  return {
+    task: winner.candidate,
+    confidence: Math.min(0.94, Math.max(0.28, winner.score)),
+    primitiveLabels: [...primitiveLabels],
+  };
+}
+
+function contextWeight(features: ObservationFeatures, task: TaskTemplate): 0 | 1 | 2 | 3 {
+  if (task.id === "REST") return 0;
+  if (features.longestPauseSeconds >= 5 && features.activeRatio >= 0.1) return 3;
+  if (features.zoneTransitions > 0 && features.longestPauseSeconds >= 2) return 2;
+  return 1;
+}
+
+export function createObservationEpisode(args: {
+  sessionId: string;
+  recordedAt: number;
+  profile: ObservationProfile;
+  phase: WorkPhase;
+  features: ObservationFeatures;
+  baseline: BaselineSnapshot;
+  motionSlice?: ObservationEpisode["motionSlice"];
+}): ObservationEpisode {
+  const inferred = inferTask(args.profile.occupation, args.phase, args.features);
+  const inferredTask = inferred.task;
+  const confidence = inferred.confidence;
+  const primitiveLabels = inferred.primitiveLabels;
+  const taskBaseline = args.baseline.tasks.find((item) => item.taskType === inferredTask.id);
+  const durationZScore = taskBaseline
+    ? safeZScore(args.features.durationSeconds, taskBaseline.meanDuration, taskBaseline.durationSD)
+    : null;
+  const pauseZScore = taskBaseline
+    ? safeZScore(args.features.longestPauseSeconds, taskBaseline.meanLongestPause, taskBaseline.pauseSD)
+    : null;
+  let disposition: LearningDisposition = args.profile.mode === "analysis" ? "analysis_only" : "accepted";
+  let dispositionReason = args.profile.mode === "analysis"
+    ? "분석 모드 기록은 개인 기준선에 자동으로 합치지 않아요."
+    : "평소 업무 후보로 개인 기준선에 포함했어요.";
+  if (confidence < 0.4) {
+    disposition = "excluded";
+    dispositionReason = "업무 추정 신뢰도가 낮아 학습과 분석에서 제외했어요.";
+  } else if (
+    args.profile.mode === "learning" &&
+    ((durationZScore !== null && durationZScore >= 1.5) ||
+      (pauseZScore !== null && pauseZScore >= 1.5) ||
+      args.features.longestPauseSeconds >= 10)
+  ) {
+    disposition = "quarantined";
+    dispositionReason = "평소 흐름으로 확정하기 어려워 기준선 학습에서 잠시 보류했어요.";
+  }
+  const useFallbackLabel = confidence < 0.55 && inferredTask.fallbackLabel;
+  return {
+    id: `episode-${crypto.randomUUID()}`,
+    sessionId: args.sessionId,
+    recordedAt: args.recordedAt,
+    date: new Date(args.recordedAt).toISOString().slice(0, 10),
+    occupation: args.profile.occupation,
+    mode: args.profile.mode,
+    phase: args.phase,
+    taskType: useFallbackLabel ? `${inferredTask.id}_GENERAL` : inferredTask.id,
+    taskLabel: useFallbackLabel ? inferredTask.fallbackLabel! : inferredTask.label,
+    taskConfidence: confidence,
+    primitiveLabels,
+    features: args.features,
+    disposition,
+    dispositionReason,
+    durationZScore,
+    pauseZScore,
+    contextWeight: contextWeight(args.features, inferredTask),
+    baselineVersion: args.profile.baselineVersion,
+    source: args.profile.mode === "analysis" ? "real_analysis" : "real_learning",
+    motionSlice: args.motionSlice,
+  };
+}

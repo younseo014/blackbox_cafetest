@@ -1,0 +1,84 @@
+{
+  "name": "blackbox-cafetest",
+  "version": "0.1.1",
+  "private": true,
+  "main": "desktop/main.mjs",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vite --config vite.desktop.config.ts --host 127.0.0.1",
+    "build": "vite build --config vite.desktop.config.ts",
+    "build:desktop": "vite build --config vite.desktop.config.ts",
+    "start": "electron desktop/main.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint app desktop --ignore-pattern desktop/dist-desktop --ignore-pattern public/mediapipe-wasm --ignore-pattern public/ort",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepare:actions": "node scripts/prepare-action-runtime.mjs"
+  },
+  "dependencies": {
+    "@base-ui-components/react": "^1.0.0-rc.0",
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "@number-flow/react": "^0.6.2",
+    "next": "16.2.6",
+    "onnxruntime-web": "^1.30.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "sonner": "^2.0.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "playwright": "1.56.0",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "tsx": "4.22.1",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "build": {
+    "appId": "kr.memoryguard.cafetest",
+    "productName": "Memory Guard Cafe Test",
+    "asar": true,
+    "beforeBuild": "desktop/before-build.cjs",
+    "directories": {
+      "app": "desktop",
+      "output": "release"
+    },
+    "files": [
+      "main.mjs",
+      "dist-desktop/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "MemoryGuard-CafeTest-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "메모리 가드"
+    }
+  },
+  "type": "module"
+}

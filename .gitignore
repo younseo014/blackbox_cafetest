@@ -1,0 +1,82 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+next-env.d.ts
+*.tsbuildinfo
+/dist/
+/dist-desktop/
+/desktop/dist-desktop/
+/release/
+/.wrangler/
+/outputs/
+/work/
+/data/
+/data/delete-candidates-*/
+/graphify-out/
+/.venv/
+
+# Local machine-learning workspace and training artifacts
+/config/*training*.json
+/scripts/__pycache__/
+/scripts/download-*.mjs
+/scripts/prepare-*.py
+/scripts/train-*.py
+/scripts/train-*.ts
+/docs/*training-report.md
+/docs/*performance-report.md
+/docs/epfl-*.md
+/models/*.json
+
+# Runtime model bundled with the application
+!/models/epfl-posture-v1.json
+
+# ui-craft
+/.ui-craft/
+
+# Public datasets and downloaded model weights. Large, reproducible from
+# docs/model-provenance.md, and not ours to redistribute.
+/data/external/
+/data/eval-scenarios/
+/models/rtmw/
+/models/yolox/
+/public/models/yolox_m.onnx
+/public/models/yolox_tiny.onnx
+/public/ort/
+/public/models/action-context/vision-int8.onnx
+
+# Team guideline shared locally, excluded from GitHub
+/docs/자체테스트_가이드라인_작업대형_2026-11-11.pdf
